@@ -11,6 +11,8 @@ static bool cwnd_limited __read_mostly = 1;
 module_param(cwnd_limited, bool, 0644);
 MODULE_PARM_DESC(cwnd_limited, "if set to 1, the scheduler tries to fill the congestion-window on all subflows");
 
+static unsigned int pkt_nr = 0;
+
 struct secsched_priv {
 	unsigned char quota;
 };
@@ -160,19 +162,15 @@ static struct sk_buff *__mptcp_secsched_next_segment(struct sock *meta_sk, int *
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sk_buff *skb = NULL;
-
+	pkt_nr += 1;
+	/* we don't allow reinjection */
 	*reinject = 0;
 
 	/* If we are in fallback-mode, just take from the meta-send-queue */
 	if (mpcb->infinite_mapping_snd || mpcb->send_infinite_mapping)
 		return tcp_send_head(meta_sk);
 
-	skb = skb_peek(&mpcb->reinject_queue);
-
-	if (skb)
-		*reinject = 1;
-	else
-		skb = tcp_send_head(meta_sk);
+	skb = tcp_send_head(meta_sk);
 	return skb;
 }
 
@@ -193,12 +191,12 @@ static struct sk_buff *mptcp_secsched_next_segment(struct sock *meta_sk,
 	if (!skb)
 		return NULL;
 
+	/* reinject has to be 0 */
 	if (*reinject) {
-		*subsk = secsched_get_available_subflow(meta_sk, skb, false);
-		if (!*subsk)
-			return NULL;
+		return NULL;
 
-		return skb;
+		/* tmp */
+		*subsk = secsched_get_available_subflow(meta_sk, skb, false);
 	}
 
 retry:
