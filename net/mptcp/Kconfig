@@ -85,6 +85,13 @@ config MPTCP_ROUNDROBIN
 	  This is a very simple round-robin scheduler. Probably has bad performance
 	  but might be interesting for researchers.
 
+config MPTCP_SECSCHED
+	tristate "MPTCP SecSched"
+	depends on (MPTCP=y)
+	---help---
+	  This is simple security-focused scheduler. Probably has bad performance.
+	  Will send at least x packets on a different path
+
 choice
 	prompt "Default MPTCP Scheduler"
 	default DEFAULT
@@ -102,6 +109,11 @@ choice
 		---help---
 		  This is the round-rob scheduler, sending in a round-robin
 		  fashion..
+
+	config DEFAULT_ROUNDROBIN
+		bool "SecSched" if MPTCP_SECSCHED=y
+		---help---
+		  This is the security scheduler, sending at least x packets on a different subflow
 
 endchoice
 endif
