@@ -90,17 +90,13 @@ zero_wnd_test:
 /* Are we not allowed to reinject this skb on tp? */
 static int mptcp_secsched_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *skb)
 {
-	/* assume true = no reinject. For security reasons,
-	 * we don't want to make one packet available on multiple subflows */
-	return true;
 
-	/*old*/
 	/* If the skb has already been enqueued in this sk, try to find
 	 * another one.
 	 */
-	/*return skb && */
+	return skb &&
 		/* Has the skb already been enqueued into this subsocket? */
-		/* mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask; */
+		 mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
 }
 
 /* We just look for any subflow that is available */
@@ -151,12 +147,7 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 }
 
 /* Returns the next segment to be sent from the mptcp meta-queue.
- * (chooses the reinject queue if any segment is waiting in it, otherwise,
- * chooses the normal write queue).
- * Sets *@reinject to 1 if the returned segment comes from the
- * reinject queue. Sets it to 0 if it is the regular send-head of the meta-sk,
- * and sets it to -1 if it is a meta-level retransmission to optimize the
- * receive-buffer.
+ * Sets *@reinject to 0 if it is the regular send-head of the meta-sk
  */
 static struct sk_buff *__mptcp_secsched_next_segment(struct sock *meta_sk, int *reinject)
 {
@@ -194,10 +185,10 @@ static struct sk_buff *mptcp_secsched_next_segment(struct sock *meta_sk,
 	/* reinject has to be 0 */
 	if (*reinject) {
 		return NULL;
-
-		/* tmp */
-		*subsk = secsched_get_available_subflow(meta_sk, skb, false);
 	}
+		/* tmp */
+		/* *subsk = secsched_get_available_subflow(meta_sk, skb, false); */
+
 
 retry:
 
