@@ -7,11 +7,15 @@ static unsigned char num_segments __read_mostly = 1;
 module_param(num_segments, byte, 0644);
 MODULE_PARM_DESC(num_segments, "The number of consecutive segments that are part of a burst");
 
-static bool cwnd_limited __read_mostly = 1;
+static bool cwnd_limited __read_mostly = 0;
 module_param(cwnd_limited, bool, 0644);
 MODULE_PARM_DESC(cwnd_limited, "if set to 1, the scheduler tries to fill the congestion-window on all subflows");
 
 static unsigned int pkt_nr = 0;
+static unsigned int subflow_cnt = 0;
+static u32 *subflow_rtt;
+static unsigned int fastest_subflow = 0;
+static unsigned float rttratio = 10;
 
 struct secsched_priv {
 	unsigned char quota;
@@ -116,34 +120,54 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 				return sk;
 		}
 	}
-
 	/* First, find the best subflow */
 	mptcp_for_each_sk(mpcb, sk) {
 		struct tcp_sock *tp = tcp_sk(sk);
 
 		if (!mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
 			continue;
+		if (mpcb->connection_list)
+		{
+			/* we do not assume more than 10 subflows */
+			for(unsigned int i = 0; i++ ; i<10)
+			{
+				if (mpcb->connection_list[i])
+				subflow_rtt[i]=mpcb->connection_list[i]->srtt;
+				if(subflow_cnt<i)
+					subflow_cnt=i;
+			}
+			for (unsigned int i=0;i++;i=subflow_cnt)
+			{
+				if (subflow_rtt[i] < subflow_rtt[fastest_subflow])
+					fastest_subflow =i;
+			}
+		}
+		return sk;//ja was?;
 
-		if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
-			backupsk = sk;
-			continue;
+			//return sk;
+
 		}
 
-		bestsk = sk;
+//		if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
+//			backupsk = sk;
+//			continue;
+//		}
+//
+//		bestsk = sk;
 	}
-
-	if (bestsk) {
-		sk = bestsk;
-	} else if (backupsk) {
+//
+//	if (bestsk) {
+//		sk = bestsk;
+//	} else if (backupsk) {
 		/* It has been sent on all subflows once - let's give it a
 		 * chance again by restarting its pathmask.
 		 */
-		if (skb)
-			TCP_SKB_CB(skb)->path_mask = 0;
-		sk = backupsk;
-	}
+//		if (skb)
+//			TCP_SKB_CB(skb)->path_mask = 0;
+//		sk = backupsk;
+//	}
 
-	return sk;
+//	return sk;
 }
 
 /* Returns the next segment to be sent from the mptcp meta-queue.
