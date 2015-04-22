@@ -15,7 +15,7 @@ static unsigned int pkt_nr = 0;
 static unsigned int subflow_cnt = 0;
 static u32 *subflow_rtt;
 static unsigned int fastest_subflow = 0;
-static unsigned float rttratio = 10;
+static float rttratio = 10;
 
 struct secsched_priv {
 	unsigned char quota;
@@ -123,51 +123,55 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 	/* First, find the best subflow */
 	mptcp_for_each_sk(mpcb, sk) {
 		struct tcp_sock *tp = tcp_sk(sk);
-
+		unsigned int loopcntr=0;
 		if (!mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
 			continue;
-		if (mpcb->connection_list)
+
+		//tp->mptcp->next->mpcb->connection_list->srtt
+		do
 		{
-			/* we do not assume more than 10 subflows */
-			for(unsigned int i = 0; i++ ; i<10)
-			{
-				if (mpcb->connection_list[i])
-				subflow_rtt[i]=mpcb->connection_list[i]->srtt;
-				if(subflow_cnt<i)
-					subflow_cnt=i;
-			}
-			for (unsigned int i=0;i++;i=subflow_cnt)
-			{
-				if (subflow_rtt[i] < subflow_rtt[fastest_subflow])
-					fastest_subflow =i;
-			}
+			if(subflow_cnt < tp->mptcp->path_index)
+				subflow_cnt=tp->mptcp->path_index;
+
+			subflow_rtt[tp->mptcp->path_index] = tp->mpcb->connection_list->srtt;
+
+			if (tp->mptcp->next)
+				tp = tp->mptcp->next;
 		}
-		return sk;//ja was?;
+		while (tp->mptcp->next);
 
-			//return sk;
-
+		for (loopcntr=0;loopcntr++;loopcntr=subflow_cnt)
+		{
+			if (subflow_rtt[loopcntr] < subflow_rtt[fastest_subflow])
+			{
+				fastest_subflow =loopcntr;
+				bestsk = sk;
+			}
+			else
+				if(!backupsk)
+					backupsk = sk;
+				else
+					/* select a (more or less) random path as backupsk
+					 * TODO: make it really random
+					 * TODO: stdlib.h does not work => cannot use random()*/
+					//if (rand(3)==2)
+						backupsk = sk;
 		}
-
-//		if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
-//			backupsk = sk;
-//			continue;
-//		}
-//
-//		bestsk = sk;
 	}
-//
-//	if (bestsk) {
-//		sk = bestsk;
-//	} else if (backupsk) {
-		/* It has been sent on all subflows once - let's give it a
-		 * chance again by restarting its pathmask.
-		 */
-//		if (skb)
-//			TCP_SKB_CB(skb)->path_mask = 0;
-//		sk = backupsk;
-//	}
-
-//	return sk;
+	if (pkt_nr != 0)
+	{
+		pkt_nr++;
+		if (pkt_nr > 10)
+			pkt_nr = 0;
+		return bestsk;
+	}
+	if (pkt_nr == 0)
+	{
+		pkt_nr++;
+		return backupsk;
+	}
+	/* should never be reached */
+	return NULL;
 }
 
 /* Returns the next segment to be sent from the mptcp meta-queue.
