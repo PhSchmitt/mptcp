@@ -90,7 +90,7 @@ config MPTCP_SECSCHED
 	depends on (MPTCP=y)
 	---help---
 	  This is simple security-focused scheduler. Probably has bad performance.
-	  Will send at least x packets on a different path
+	  Will send at least x packets on a different path.
 
 choice
 	prompt "Default MPTCP Scheduler"
@@ -110,7 +110,7 @@ choice
 		  This is the round-rob scheduler, sending in a round-robin
 		  fashion..
 
-	config DEFAULT_ROUNDROBIN
+	config DEFAULT_SECSCHED
 		bool "SecSched" if MPTCP_SECSCHED=y
 		---help---
 		  This is the security scheduler, sending at least x packets on a different subflow
@@ -123,5 +123,6 @@ config DEFAULT_MPTCP_SCHED
 	depends on (MPTCP=y)
 	default "default" if DEFAULT_SCHEDULER
 	default "roundrobin" if DEFAULT_ROUNDROBIN
+	default "secsched" if DEFAULT_SECSCHED
 	default "default"
 
