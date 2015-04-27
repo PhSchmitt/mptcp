@@ -1,4 +1,3 @@
-/* MPTCP Scheduler module selector. Highly inspired by tcp_cong.c */
 
 #include <linux/module.h>
 #include <net/mptcp.h>
@@ -11,11 +10,11 @@ static bool cwnd_limited __read_mostly = 0;
 module_param(cwnd_limited, bool, 0644);
 MODULE_PARM_DESC(cwnd_limited, "if set to 1, the scheduler tries to fill the congestion-window on all subflows");
 
-static unsigned int pkt_nr = 0;
+static u32 pkt_nr = 0;
 //static unsigned int subflow_cnt = 0;
 /* TODO we don't assume more than 10 subflows - make it universal */
-static u32 subflow_rtt[10] = {0};
-static unsigned int fastest_subflow = 0;
+//static u32 subflow_rtt[10] = {0};
+//static unsigned int fastest_subflow = 0;
 //static float rttratio = 10;
 
 struct secsched_priv {
@@ -28,11 +27,9 @@ static struct secsched_priv *secsched_get_priv(const struct tcp_sock *tp)
 }
 
 /* If the sub-socket sk available to send the skb? */
-static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb,
-		bool zero_wnd_test, bool cwnd_test)
+static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-	unsigned int space, in_flight;
 
 	/* Set of states for which we are allowed to send data */
 	if (!mptcp_sk_can_send(sk))
@@ -65,29 +62,9 @@ static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb,
 	if (!tp->mptcp->fully_established) {
 		/* Make sure that we send in-order data */
 		if (skb && tp->mptcp->second_packet &&
-				tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
+		    tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
 			return false;
 	}
-
-	if (!cwnd_test)
-		goto zero_wnd_test;
-
-	in_flight = tcp_packets_in_flight(tp);
-	/* Not even a single spot in the cwnd */
-	if (in_flight >= tp->snd_cwnd)
-		return false;
-
-	/* Now, check if what is queued in the subflow's send-queue
-	 * already fills the cwnd.
-	 */
-	space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
-
-	if (tp->write_seq - tp->snd_nxt > space)
-		return false;
-
-	zero_wnd_test:
-	if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
-		return false;
 
 	return true;
 }
@@ -95,13 +72,12 @@ static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb,
 /* Are we not allowed to reinject this skb on tp? */
 static int mptcp_secsched_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *skb)
 {
-
 	/* If the skb has already been enqueued in this sk, try to find
 	 * another one.
 	 */
 	return skb &&
-			/* Has the skb already been enqueued into this subsocket? */
-			mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
+		/* Has the skb already been enqueued into this subsocket? */
+		mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
 }
 
 /* We just look for any subflow that is available */
@@ -109,142 +85,236 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 		struct sk_buff *skb,
 		bool zero_wnd_test)
 {
+	//	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
+	//	struct sock *sk, *bestsk = NULL, *backupsk = NULL;
+
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
-	struct sock *sk, *bestsk = NULL, *backupsk = NULL;
+	struct sock *sk, *bestsk = NULL, *lowpriosk = NULL, *backupsk = NULL;
+	u32 min_time_to_peer = 0xffffffff, lowprio_min_time_to_peer = 0xffffffff;
+	int cnt_backups = 0;
+
+	/* if there is only one subflow, bypass the scheduling function */
+	if (mpcb->cnt_subflows == 1) {
+		pr_info("MPTCP has only one subflow - no multipath-security possible");
+		bestsk = (struct sock *)mpcb->connection_list;
+		if (!mptcp_secsched_is_available(bestsk, skb))
+			bestsk = NULL;
+		return bestsk;
+	}
 
 	/* Answer data_fin on same subflow!!! */
 	if (meta_sk->sk_shutdown & RCV_SHUTDOWN &&
 			skb && mptcp_is_data_fin(skb)) {
 		mptcp_for_each_sk(mpcb, sk) {
 			if (tcp_sk(sk)->mptcp->path_index == mpcb->dfin_path_index &&
-					mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
+					mptcp_secsched_is_available(sk, skb))
 				return sk;
 		}
 	}
+
 	/* First, find the best subflow */
 	mptcp_for_each_sk(mpcb, sk) {
 		struct tcp_sock *tp = tcp_sk(sk);
-		unsigned int loopcntr=0;
-		if (!mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
-			continue;
-		printk("MPTCP-SECSCHED not an ACK => find path \n");
-		//tp->mptcp->next->mpcb->connection_list->srtt
-		do
-		{
-			if(!tp || !tp->mpcb || !tp->mpcb->connection_list || !tp->mpcb->connection_list->srtt || !tp->mptcp->path_index)
-				/* something went wrong */
-				printk("MPTCP-SECSCHED err 134 \n");
-			continue;
-			/*	if(subflow_cnt < tp->mptcp->path_index)
-					subflow_cnt=tp->mptcp->path_index; */
 
-			if (loopcntr < 10)
-			{
-				subflow_rtt[loopcntr] = tp->mpcb->connection_list->srtt;
-				printk("MPTCP-SECSCHED path srtt ");
-				printk(subflow_rtt[loopcntr]);
-				printk ("\n");
-				loopcntr++;
-			}
+		if (tp->mptcp->rcv_low_prio || tp->mptcp->low_prio)
+			cnt_backups++;
 
+		if ((tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
+				tp->srtt < lowprio_min_time_to_peer) {
+			if (!mptcp_secsched_is_available(sk, skb))
+				continue;
 
-			if (tp->mptcp->next)
-			{
-				printk("MPTCP-SECSCHED there is another path \n");
-				tp = tp->mptcp->next;
-			}
-			else
-			{
-				printk("MPTCP-SECSCHED err 155 \n");
+			if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
+				backupsk = sk;
 				continue;
 			}
 
-		}
-		while (tp->mptcp);
-		printk("MPTCP-SECSCHED iterated through all paths \n");
+			lowprio_min_time_to_peer = tp->srtt;
+			lowpriosk = sk;
+		} else if (!(tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
+				tp->srtt < min_time_to_peer) {
+			if (!mptcp_secsched_is_available(sk, skb))
+				continue;
 
-		for (loopcntr=0;loopcntr<10;loopcntr++)
-		{
-			if (!subflow_rtt[loopcntr] || !subflow_rtt[fastest_subflow])
-			{
-				/* something went wrong */
-				printk("MPTCP-SECSCHED err 164 \n");
+			if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
+				backupsk = sk;
 				continue;
 			}
 
-
-			if (subflow_rtt[loopcntr] < subflow_rtt[fastest_subflow] && subflow_rtt[loopcntr] != 0)
-			{
-				fastest_subflow =loopcntr;
-				printk("MPTCP-SECSCHED fastest subflow is ");
-				printk(loopcntr);
-				printk("\n MPTCP-SECSCHED choose ");
-				printk(loopcntr);
-				printk("as best subflow \n");
-				bestsk = sk;
-			}
-			else
-				if(!backupsk)
-				{
-					printk("MPTCP-SECSCHED choose ");
-					printk(loopcntr);
-					printk("as backup subflow \n");
-					backupsk = sk;
-				}
-				else
-					/* select a (more or less) random path as backupsk
-					 * TODO: make it really random
-					 * TODO: stdlib.h does not work => cannot use random()*/
-					//if (random(3)==2)
-				{
-					printk("MPTCP-SECSCHED choose ");
-					printk(loopcntr);
-					printk("as backup subflow \n");
-					backupsk = sk;
-				}
+			min_time_to_peer = tp->srtt;
+			bestsk = sk;
 		}
 	}
-	if (pkt_nr != 0)
+
+	if (mpcb->cnt_established == cnt_backups && lowpriosk) {
+		sk = lowpriosk;
+	} else if (bestsk) {
+		sk = bestsk;
+	} else if (backupsk) {
+		/* It has been sent on all subflows once - let's give it a
+		 * chance again by restarting its pathmask.
+		 */
+		if (skb)
+			TCP_SKB_CB(skb)->path_mask = 0;
+		sk = backupsk;
+	}
+	if (pkt_nr%10 != 0)
 	{
-		printk("MPTCP-SECSCHED pkt-nr= ");
-		printk(pkt_nr);
-		printk("use fastest subflow \n");
+		pr_debug("MPTCP-SECSCHED pkt-nr= %i use fastest subflow \n",pkt_nr);
 		pkt_nr++;
-		if (pkt_nr > 10)
-			pkt_nr = 0;
 		if (bestsk)
 			return bestsk;
 	}
 	else
 	{
+		pr_debug("MPTCP-SECSCHED pkt-nr= %i use backup subflow \n",pkt_nr);
 		pkt_nr++;
-		printk("MPTCP-SECSCHED pkt-nr= ");
-		printk(pkt_nr);
-		printk("use backup subflow \n");
 		if (backupsk)
 			return backupsk;
 	}
 	/* should never be reached */
-	printk("MPTCP-SECSCHED err 228 \n");
+	pr_debug("MPTCP-SECSCHED no suitable socket found \n");
 	return NULL;
+
+	//	/* Answer data_fin on same subflow!!! */
+	//	if (meta_sk->sk_shutdown & RCV_SHUTDOWN &&
+	//			skb && mptcp_is_data_fin(skb)) {
+	//		mptcp_for_each_sk(mpcb, sk) {
+	//			if (tcp_sk(sk)->mptcp->path_index == mpcb->dfin_path_index &&
+	//					mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
+	//				return sk;
+	//		}
+	//	}
+	//	/* First, find the best subflow */
+	//	mptcp_for_each_sk(mpcb, sk) {
+	//		struct tcp_sock *tp = tcp_sk(sk);
+	//		unsigned int loopcntr=0;
+	//		if (!mptcp_secsched_is_available(sk, skb, zero_wnd_test, true))
+	//			continue;
+	//		pr_info("MPTCP-SECSCHED not an ACK => find path \n");
+	//		//tp->mptcp->next->mpcb->connection_list->srtt
+	//		do
+	//		{
+	//			if(!tp || !tp->mpcb || !tp->mpcb->connection_list || !tp->mpcb->connection_list->srtt || !tp->mptcp->path_index)
+	//				/* something went wrong */
+	//				pr_err("MPTCP-SECSCHED err 134 \n");
+	//			continue;
+	//			/*	if(subflow_cnt < tp->mptcp->path_index)
+	//					subflow_cnt=tp->mptcp->path_index; */
+	//
+	//			if (loopcntr < 10)
+	//			{
+	//				subflow_rtt[loopcntr] = tp->mpcb->connection_list->srtt;
+	//				pr_info("MPTCP-SECSCHED path srtt %i \n",subflow_rtt[loopcntr]);
+	//				loopcntr++;
+	//			}
+	//
+	//
+	//			if (tp->mptcp->next)
+	//			{
+	//				pr_info("MPTCP-SECSCHED there is another path \n");
+	//				tp = tp->mptcp->next;
+	//			}
+	//			else
+	//			{
+	//				pr_err("MPTCP-SECSCHED err 155 \n");
+	//				continue;
+	//			}
+	//
+	//		}
+	//		while (tp->mptcp);
+	//		pr_info("MPTCP-SECSCHED iterated through all paths \n");
+	//
+	//		for (loopcntr=0;loopcntr<10;loopcntr++)
+	//		{
+	//			if (!subflow_rtt[loopcntr] || !subflow_rtt[fastest_subflow])
+	//			{
+	//				/* something went wrong */
+	//				pr_err("MPTCP-SECSCHED err 164 \n");
+	//				continue;
+	//			}
+	//
+	//
+	//			if (subflow_rtt[loopcntr] < subflow_rtt[fastest_subflow] && subflow_rtt[loopcntr] != 0)
+	//			{
+	//				fastest_subflow =loopcntr;
+	//				pr_info("MPTCP-SECSCHED fastest subflow is %i \n",loopcntr);
+	//				pr_info("MPTCP-SECSCHED choose %i as best subflow \n",loopcntr);
+	//				bestsk = sk;
+	//			}
+	//			else
+	//				if(!backupsk)
+	//				{
+	//					pr_info("MPTCP-SECSCHED choose %i as backup subflow \n",loopcntr);
+	//					backupsk = sk;
+	//				}
+	//				else
+	//					/* select a (more or less) random path as backupsk
+	//					 * TODO: make it really random
+	//					 * TODO: stdlib.h does not work => cannot use random()*/
+	//					//if (random(3)==2)
+	//				{
+	//					pr_info("MPTCP-SECSCHED choose %i as backup subflow \n",loopcntr);
+	//					backupsk = sk;
+	//				}
+	//		}
+	//	}
+	//	if (pkt_nr != 0)
+	//	{
+	//		pr_info("MPTCP-SECSCHED pkt-nr= %i use fastest subflow \n",pkt_nr);
+	//		pkt_nr++;
+	//		if (pkt_nr > 10)
+	//			pkt_nr = 0;
+	//		if (bestsk)
+	//			return bestsk;
+	//	}
+	//	else
+	//	{
+	//		pkt_nr++;
+	//		pr_info("MPTCP-SECSCHED pkt-nr= %i use backup subflow \n",pkt_nr);
+	//		if (backupsk)
+	//			return backupsk;
+	//	}
+	//	/* should never be reached */
+	//	pr_err("MPTCP-SECSCHED err 228 \n");
+	//	return NULL;
 }
 
 /* Returns the next segment to be sent from the mptcp meta-queue.
  * Sets *@reinject to 0 if it is the regular send-head of the meta-sk
+ * TODO we don't allow retransmit over a new path -> edit here?
  */
 static struct sk_buff *__mptcp_secsched_next_segment(struct sock *meta_sk, int *reinject)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sk_buff *skb = NULL;
-	pkt_nr += 1;
-	/* we don't allow reinjection */
+
 	*reinject = 0;
 
 	/* If we are in fallback-mode, just take from the meta-send-queue */
 	if (mpcb->infinite_mapping_snd || mpcb->send_infinite_mapping)
 		return tcp_send_head(meta_sk);
 
-	skb = tcp_send_head(meta_sk);
+	skb = skb_peek(&mpcb->reinject_queue);
+
+	if (skb) {
+		*reinject = 1;
+	} else {
+		skb = tcp_send_head(meta_sk);
+
+		if (!skb && meta_sk->sk_socket &&
+		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
+		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
+			struct sock *subsk = secsched_get_available_subflow(meta_sk, NULL,
+								   false);
+			if (!subsk)
+				return NULL;
+
+//			skb = mptcp_rcv_buf_optimization(subsk, 0);
+//			if (skb)
+//				*reinject = -1;
+		}
+	}
 	return skb;
 }
 
@@ -253,11 +323,11 @@ static struct sk_buff *mptcp_secsched_next_segment(struct sock *meta_sk,
 		struct sock **subsk,
 		unsigned int *limit)
 {
-	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
-	struct sock *sk_it, *choose_sk = NULL;
 	struct sk_buff *skb = __mptcp_secsched_next_segment(meta_sk, reinject);
-	unsigned char split = num_segments;
-	unsigned char iter = 0, full_subs = 0;
+	unsigned int mss_now;
+	struct tcp_sock *subtp;
+	u16 gso_max_segs;
+	u32 max_len, max_segs, window, needed;
 
 	/* As we set it, we have to reset it as well. */
 	*limit = 0;
@@ -265,86 +335,52 @@ static struct sk_buff *mptcp_secsched_next_segment(struct sock *meta_sk,
 	if (!skb)
 		return NULL;
 
-	/* reinject has to be 0 */
-	if (*reinject) {
+	*subsk = secsched_get_available_subflow(meta_sk, skb, true);
+	if (!*subsk)
 		return NULL;
-	}
-	/* tmp */
-	/* *subsk = secsched_get_available_subflow(meta_sk, skb, false); */
 
+	subtp = tcp_sk(*subsk);
+	mss_now = tcp_current_mss(*subsk);
 
-	retry:
+//	if (!*reinject && unlikely(!tcp_snd_wnd_test(tcp_sk(meta_sk), skb, mss_now))) {
+//		skb = mptcp_rcv_buf_optimization(*subsk, 1);
+//		if (skb)
+//			*reinject = -1;
+//		else
+//			return NULL;
+//	}
 
-	/* First, we look for a subflow who is currently being used */
-	mptcp_for_each_sk(mpcb, sk_it) {
-		struct tcp_sock *tp_it = tcp_sk(sk_it);
-		struct secsched_priv *rsp = secsched_get_priv(tp_it);
-
-		if (!mptcp_secsched_is_available(sk_it, skb, false, cwnd_limited))
-			continue;
-
-		iter++;
-
-		/* Is this subflow currently being used? */
-		if (rsp->quota > 0 && rsp->quota < num_segments) {
-			split = num_segments - rsp->quota;
-			choose_sk = sk_it;
-			goto found;
-		}
-
-		/* Or, it's totally unused */
-		if (!rsp->quota) {
-			split = num_segments;
-			choose_sk = sk_it;
-		}
-
-		/* Or, it must then be fully used  */
-		if (rsp->quota == num_segments)
-			full_subs++;
-	}
-
-	/* All considered subflows have a full quota, and we considered at
-	 * least one.
-	 */
-	if (iter && iter == full_subs) {
-		/* So, we restart this round by setting quota to 0 and retry
-		 * to find a subflow.
-		 */
-		mptcp_for_each_sk(mpcb, sk_it) {
-			struct tcp_sock *tp_it = tcp_sk(sk_it);
-			struct secsched_priv *rsp = secsched_get_priv(tp_it);
-
-			if (!mptcp_secsched_is_available(sk_it, skb, false, cwnd_limited))
-				continue;
-
-			rsp->quota = 0;
-		}
-
-		goto retry;
-	}
-
-	found:
-	if (choose_sk) {
-		unsigned int mss_now;
-		struct tcp_sock *choose_tp = tcp_sk(choose_sk);
-		struct secsched_priv *rsp = secsched_get_priv(choose_tp);
-
-		if (!mptcp_secsched_is_available(choose_sk, skb, false, true))
-			return NULL;
-
-		*subsk = choose_sk;
-		mss_now = tcp_current_mss(*subsk);
-		*limit = split * mss_now;
-
-		if (skb->len > mss_now)
-			rsp->quota += DIV_ROUND_UP(skb->len, mss_now);
-		else
-			rsp->quota++;
-
+	/* No splitting required, as we will only send one single segment */
+	if (skb->len <= mss_now)
 		return skb;
-	}
 
-	return NULL;
+	/* The following is similar to tcp_mss_split_point, but
+	 * we do not care about nagle, because we will anyways
+	 * use TCP_NAGLE_PUSH, which overrides this.
+	 *
+	 * So, we first limit according to the cwnd/gso-size and then according
+	 * to the subflow's window.
+	 */
+
+	gso_max_segs = (*subsk)->sk_gso_max_segs;
+	if (!gso_max_segs) /* No gso supported on the subflow's NIC */
+		gso_max_segs = 1;
+	max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb), gso_max_segs);
+	if (!max_segs)
+		return NULL;
+
+	max_len = mss_now * max_segs;
+	window = tcp_wnd_end(subtp) - subtp->write_seq;
+
+	needed = min(skb->len, window);
+	if (max_len <= skb->len)
+		/* Take max_win, which is actually the cwnd/gso-size */
+		*limit = max_len;
+	else
+		/* Or, take the window */
+		*limit = needed;
+
+	return skb;
 }
 
 struct mptcp_sched_ops mptcp_sched_sec = {
@@ -373,7 +409,6 @@ module_init(secsched_register);
 module_exit(secsched_unregister);
 
 MODULE_AUTHOR("Philipp Schmitt");
-/* inspired by rr scheduler by Christoph Paasch */
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SECURITY MPTCP");
 MODULE_VERSION("0.89");
