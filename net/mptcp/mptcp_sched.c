@@ -122,6 +122,7 @@ static struct sock *get_available_subflow(struct sock *meta_sk,
 
 	/* if there is only one subflow, bypass the scheduling function */
 	if (mpcb->cnt_subflows == 1) {
+		pr_info("MPTCP default scheduler: There is only one subflow \n");
 		bestsk = (struct sock *)mpcb->connection_list;
 		if (!mptcp_is_available(bestsk, skb, zero_wnd_test))
 			bestsk = NULL;

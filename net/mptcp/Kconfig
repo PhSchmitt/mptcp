@@ -123,6 +123,6 @@ config DEFAULT_MPTCP_SCHED
 	depends on (MPTCP=y)
 	default "default" if DEFAULT_SCHEDULER
 	default "roundrobin" if DEFAULT_ROUNDROBIN
-	default "secsched" if DEFAULT_SECSCHED
+	default "security" if DEFAULT_SECSCHED
 	default "default"
 
