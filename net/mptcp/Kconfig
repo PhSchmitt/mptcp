@@ -85,12 +85,19 @@ config MPTCP_ROUNDROBIN
 	  This is a very simple round-robin scheduler. Probably has bad performance
 	  but might be interesting for researchers.
 
-config MPTCP_SECSCHED
-	tristate "MPTCP SecSched"
+config MPTCP_9010
+	tristate "MPTCP 9010"
 	depends on (MPTCP=y)
 	---help---
 	  This is simple security-focused scheduler. Probably has bad performance.
-	  Will send at least x packets on a different path.
+	  Will send 90 percent on path a and 10 percent on b.
+
+config MPTCP_APPCHOICE
+	tristate "MPTCP AppChoice"
+	depends on (MPTCP=y)
+	---help---
+	  This is simple security-focused scheduler. Probably has bad performance.
+	  The App-Developer selects the path through a socket option
 
 choice
 	prompt "Default MPTCP Scheduler"
@@ -110,10 +117,15 @@ choice
 		  This is the round-rob scheduler, sending in a round-robin
 		  fashion..
 
-	config DEFAULT_SECSCHED
-		bool "SecSched" if MPTCP_SECSCHED=y
+	config DEFAULT_9010
+		bool "9010" if MPTCP_9010=y
 		---help---
-		  This is the security scheduler, sending at least x packets on a different subflow
+		  This is the 90/10 scheduler, will send 90 percent on path a and 10 percent on b.
+
+	config DEFAULT_APPCHOICE
+		bool "AppChoice" if MPTCP_APPCHOICE=y
+		---help---
+		  This is the Appchoice scheduler, the App-Developer selects the path through a socket option  
 
 endchoice
 endif
@@ -123,6 +135,6 @@ config DEFAULT_MPTCP_SCHED
 	depends on (MPTCP=y)
 	default "default" if DEFAULT_SCHEDULER
 	default "roundrobin" if DEFAULT_ROUNDROBIN
-	default "security" if DEFAULT_SECSCHED
+	default "9010" if DEFAULT_9010
+	default "appchoice" if DEFAULT_APPCHOICE
 	default "default"
-

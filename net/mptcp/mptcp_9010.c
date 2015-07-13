@@ -2,27 +2,22 @@
 #include <linux/module.h>
 #include <net/mptcp.h>
 
-static unsigned char num_segments __read_mostly = 1;
-module_param(num_segments, byte, 0644);
-MODULE_PARM_DESC(num_segments, "The number of consecutive segments that are part of a burst");
-
-static bool cwnd_limited __read_mostly = 0;
-module_param(cwnd_limited, bool, 0644);
-MODULE_PARM_DESC(cwnd_limited, "if set to 1, the scheduler tries to fill the congestion-window on all subflows");
-
 static u32 pkt_nr = 0;
 
-struct secsched_priv {
-	unsigned char quota;
+struct sched9010_priv {
+
 };
 
-static struct secsched_priv *secsched_get_priv(const struct tcp_sock *tp)
+/* unused */
+/*
+static struct sched9010_priv *sched9010_get_priv(const struct tcp_sock *tp)
 {
-	return (struct secsched_priv *)&tp->mptcp->mptcp_sched[0];
+	return (struct sched9010_priv *)&tp->mptcp->mptcp_sched[0];
 }
+*/
 
 /* If the sub-socket sk available to send the skb? */
-static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb)
+static bool mptcp_sched9010_is_available(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
@@ -65,19 +60,18 @@ static bool mptcp_secsched_is_available(struct sock *sk, struct sk_buff *skb)
 }
 
 /* Are we not allowed to reinject this skb on tp? */
-static int mptcp_secsched_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *skb)
+static int mptcp_sched9010_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *skb)
 {
 	/* If the skb has already been enqueued in this sk, try to find
 	 * another one.
 	 */
 	return skb &&
 		/* Has the skb already been enqueued into this subsocket? */
-		/* TODO: we don't want to reinject on another path if possible - is this line responsible? */
 		mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
 }
 
 /* We just look for any subflow that is available */
-static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
+static struct sock *sched9010_get_available_subflow(struct sock *meta_sk,
 		struct sk_buff *skb,
 		bool zero_wnd_test)
 {
@@ -88,9 +82,9 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 
 	/* if there is only one subflow, bypass the scheduling function */
 	if (mpcb->cnt_subflows == 1) {
-		pr_info("MPTCP SecSched: There is only one subflow - no multipath-security possible \n");
+		pr_info("MPTCP sched9010: There is only one subflow - no multipath-security possible \n");
 		bestsk = (struct sock *)mpcb->connection_list;
-		if (!mptcp_secsched_is_available(bestsk, skb))
+		if (!mptcp_sched9010_is_available(bestsk, skb))
 			bestsk = NULL;
 		return bestsk;
 	}
@@ -100,7 +94,7 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 			skb && mptcp_is_data_fin(skb)) {
 		mptcp_for_each_sk(mpcb, sk) {
 			if (tcp_sk(sk)->mptcp->path_index == mpcb->dfin_path_index &&
-					mptcp_secsched_is_available(sk, skb))
+					mptcp_sched9010_is_available(sk, skb))
 				return sk;
 		}
 	}
@@ -114,10 +108,10 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 
 		if ((tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
 				tp->srtt < lowprio_min_time_to_peer) {
-			if (!mptcp_secsched_is_available(sk, skb))
+			if (!mptcp_sched9010_is_available(sk, skb))
 				continue;
 
-			if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
+			if (mptcp_sched9010_dont_reinject_skb(tp, skb)) {
 				backupsk = sk;
 				continue;
 			}
@@ -126,10 +120,10 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 			lowpriosk = sk;
 		} else if (!(tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
 				tp->srtt < min_time_to_peer) {
-			if (!mptcp_secsched_is_available(sk, skb))
+			if (!mptcp_sched9010_is_available(sk, skb))
 				continue;
 
-			if (mptcp_secsched_dont_reinject_skb(tp, skb)) {
+			if (mptcp_sched9010_dont_reinject_skb(tp, skb)) {
 				backupsk = sk;
 				continue;
 			}
@@ -151,19 +145,17 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 			TCP_SKB_CB(skb)->path_mask = 0;
 		sk = backupsk;
 	}
-	 /* Secure Scheduler: Ensure, that every 10th packet doesn't use the fastest subflow
-  * TODO: One may vary the number of derouted packets e.g. according to the RTT-difference of the links
-  */
-	if (pkt_nr%10 != 0)
+	/* 90/10 Scheduler: Ensure, that every 10th packet doesn't use the fastest subflow */
+	if (0 != pkt_nr%10)
 	{
-		pr_debug("MPTCP-SECSCHED pkt-nr= %i use fastest subflow \n",pkt_nr);
+		pr_debug("MPTCP 90/10 SCHEDULER: pkt-nr= %i use fastest subflow \n",pkt_nr);
 		pkt_nr++;
 		if (bestsk)
 			return bestsk;
 	}
 	else
 	{
-		pr_debug("MPTCP-SECSCHED pkt-nr= %i use backup subflow \n",pkt_nr);
+		pr_debug("MPTCP 90/10 SCHEDULER: pkt-nr= %i use backup subflow \n",pkt_nr);
 		pkt_nr++;
 		if (lowpriosk)
 			return lowpriosk;
@@ -171,15 +163,54 @@ static struct sock *secsched_get_available_subflow(struct sock *meta_sk,
 			return backupsk;
 	}
 	/* should never be reached */
-	pr_debug("MPTCP-SECSCHED no suitable socket found \n");
+	pr_debug("MPTCP 90/10 SCHEDULER: no suitable socket found \n");
 	return NULL;
 }
 
 /* Returns the next segment to be sent from the mptcp meta-queue.
  * Sets *@reinject to 0 if it is the regular send-head of the meta-sk
- * TODO we don't allow retransmit over a new path -> edit here?
  */
-static struct sk_buff *__mptcp_secsched_next_segment(struct sock *meta_sk, int *reinject)
+/* TODO unused? */
+//static struct sk_buff *__mptcp_sched9010_next_segment(struct sock *meta_sk, int *reinject)
+//{
+//	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
+//	struct sk_buff *skb = NULL;
+//
+//	*reinject = 0;
+//
+//	/* If we are in fallback-mode, just take from the meta-send-queue */
+//	if (mpcb->infinite_mapping_snd || mpcb->send_infinite_mapping)
+//		return tcp_send_head(meta_sk);
+//
+//	skb = skb_peek(&mpcb->reinject_queue);
+//
+//	if (skb) {
+//		*reinject = 1;
+//	} else {
+//		skb = tcp_send_head(meta_sk);
+//
+//		if (!skb && meta_sk->sk_socket &&
+//		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
+//		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
+//			struct sock *subsk = sched9010_get_available_subflow(meta_sk, NULL,
+//								   false);
+//			if (!subsk)
+//				return NULL;
+//		}
+//	}
+//	return skb;
+//}
+
+/* Reinjections occure here - disable for 90/10 scheduler */
+static struct sk_buff *mptcp_rcv_buf_optimization(struct sock *sk, int penal)
+{
+		return NULL;
+}
+
+static struct sk_buff *mptcp_sched9010_next_segment(struct sock *meta_sk,
+		int *reinject,
+		struct sock **subsk,
+		unsigned int *limit)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sk_buff *skb = NULL;
@@ -200,99 +231,47 @@ static struct sk_buff *__mptcp_secsched_next_segment(struct sock *meta_sk, int *
 		if (!skb && meta_sk->sk_socket &&
 		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
 		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
-			struct sock *subsk = secsched_get_available_subflow(meta_sk, NULL,
+			struct sock *subsk = sched9010_get_available_subflow(meta_sk, NULL,
 								   false);
 			if (!subsk)
 				return NULL;
+
+			skb = mptcp_rcv_buf_optimization(subsk, 0);
+			if (skb)
+				*reinject = -1;
 		}
 	}
 	return skb;
 }
 
-static struct sk_buff *mptcp_secsched_next_segment(struct sock *meta_sk,
-		int *reinject,
-		struct sock **subsk,
-		unsigned int *limit)
-{
-	struct sk_buff *skb = __mptcp_secsched_next_segment(meta_sk, reinject);
-	unsigned int mss_now;
-	struct tcp_sock *subtp;
-	u16 gso_max_segs;
-	u32 max_len, max_segs, window, needed;
 
-	/* As we set it, we have to reset it as well. */
-	*limit = 0;
-
-	if (!skb)
-		return NULL;
-
-	*subsk = secsched_get_available_subflow(meta_sk, skb, true);
-	if (!*subsk)
-		return NULL;
-
-	subtp = tcp_sk(*subsk);
-	mss_now = tcp_current_mss(*subsk);
-
-	/* No splitting required, as we will only send one single segment */
-	if (skb->len <= mss_now)
-		return skb;
-
-	/* The following is similar to tcp_mss_split_point, but
-	 * we do not care about nagle, because we will anyways
-	 * use TCP_NAGLE_PUSH, which overrides this.
-	 *
-	 * So, we first limit according to the cwnd/gso-size and then according
-	 * to the subflow's window.
-	 */
-
-	gso_max_segs = (*subsk)->sk_gso_max_segs;
-	if (!gso_max_segs) /* No gso supported on the subflow's NIC */
-		gso_max_segs = 1;
-	max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb), gso_max_segs);
-	if (!max_segs)
-		return NULL;
-
-	max_len = mss_now * max_segs;
-	window = tcp_wnd_end(subtp) - subtp->write_seq;
-
-	needed = min(skb->len, window);
-	if (max_len <= skb->len)
-		/* Take max_win, which is actually the cwnd/gso-size */
-		*limit = max_len;
-	else
-		/* Or, take the window */
-		*limit = needed;
-
-	return skb;
-}
-
-struct mptcp_sched_ops mptcp_sched_sec = {
-		.get_subflow = secsched_get_available_subflow,
-		.next_segment = mptcp_secsched_next_segment,
-		.name = "security",
+struct mptcp_sched_ops mptcp_sched9010 = {
+		.get_subflow = sched9010_get_available_subflow,
+		.next_segment = mptcp_sched9010_next_segment,
+		.name = "9010",
 		.owner = THIS_MODULE,
 };
 
-static int __init secsched_register(void)
+static int __init sched9010_register(void)
 {
-	BUILD_BUG_ON(sizeof(struct secsched_priv) > MPTCP_SCHED_SIZE);
+	BUILD_BUG_ON(sizeof(struct sched9010_priv) > MPTCP_SCHED_SIZE);
 
-	if (mptcp_register_scheduler(&mptcp_sched_sec))
+	if (mptcp_register_scheduler(&mptcp_sched9010))
 		return -1;
 
 	return 0;
 }
 
-static void secsched_unregister(void)
+static void sched9010_unregister(void)
 {
-	mptcp_unregister_scheduler(&mptcp_sched_sec);
+	mptcp_unregister_scheduler(&mptcp_sched9010);
 }
 
-module_init(secsched_register);
-module_exit(secsched_unregister);
+module_init(sched9010_register);
+module_exit(sched9010_unregister);
 
 MODULE_AUTHOR("Philipp Schmitt");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("SECURITY MPTCP");
+MODULE_DESCRIPTION("MPTCP SCHEDULER 90 10");
 MODULE_VERSION("0.89");
 
