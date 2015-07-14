@@ -14,90 +14,90 @@ static struct sched9010_priv *sched9010_get_priv(const struct tcp_sock *tp)
 {
 	return (struct sched9010_priv *)&tp->mptcp->mptcp_sched[0];
 }
-*/
+ */
 
 /* Reinjections occure here - disable for 90/10 scheduler */
 static struct sk_buff *mptcp_sched9010_rcv_buf_optimization(struct sock *sk, int penal)
 {
-		return NULL;
+	return NULL;
 }
 
 /* If the sub-socket sk available to send the skb? */
 static bool mptcp_sched9010_is_available(struct sock *sk, struct sk_buff *skb,
-bool zero_wnd_test)
+		bool zero_wnd_test)
 {
-struct tcp_sock *tp = tcp_sk(sk);
-unsigned int mss_now, space, in_flight;
+	struct tcp_sock *tp = tcp_sk(sk);
+	unsigned int mss_now, space, in_flight;
 
-/* Set of states for which we are allowed to send data */
-if (!mptcp_sk_can_send(sk))
-return false;
+	/* Set of states for which we are allowed to send data */
+	if (!mptcp_sk_can_send(sk))
+		return false;
 
-/* We do not send data on this subflow unless it is
-* fully established, i.e. the 4th ack has been received.
-*/
-if (tp->mptcp->pre_established)
-return false;
+	/* We do not send data on this subflow unless it is
+	 * fully established, i.e. the 4th ack has been received.
+	 */
+	if (tp->mptcp->pre_established)
+		return false;
 
-if (tp->pf)
-return false;
+	if (tp->pf)
+		return false;
 
-if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss) {
-/* If SACK is disabled, and we got a loss, TCP does not exit
-* the loss-state until something above high_seq has been acked.
-* (see tcp_try_undo_recovery)
-*
-* high_seq is the snd_nxt at the moment of the RTO. As soon
-* as we have an RTO, we won't push data on the subflow.
-* Thus, snd_una can never go beyond high_seq.
-*/
-if (!tcp_is_reno(tp))
-return false;
-else if (tp->snd_una != tp->high_seq)
-return false;
-}
+	if (inet_csk(sk)->icsk_ca_state == TCP_CA_Loss) {
+		/* If SACK is disabled, and we got a loss, TCP does not exit
+		 * the loss-state until something above high_seq has been acked.
+		 * (see tcp_try_undo_recovery)
+		 *
+		 * high_seq is the snd_nxt at the moment of the RTO. As soon
+		 * as we have an RTO, we won't push data on the subflow.
+		 * Thus, snd_una can never go beyond high_seq.
+		 */
+		if (!tcp_is_reno(tp))
+			return false;
+		else if (tp->snd_una != tp->high_seq)
+			return false;
+	}
 
-if (!tp->mptcp->fully_established) {
-/* Make sure that we send in-order data */
-if (skb && tp->mptcp->second_packet &&
-tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
-return false;
-}
+	if (!tp->mptcp->fully_established) {
+		/* Make sure that we send in-order data */
+		if (skb && tp->mptcp->second_packet &&
+				tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
+			return false;
+	}
 
-/* If TSQ is already throttling us, do not send on this subflow. When
-* TSQ gets cleared the subflow becomes eligible again.
-*/
-if (test_bit(TSQ_THROTTLED, &tp->tsq_flags))
-return false;
+	/* If TSQ is already throttling us, do not send on this subflow. When
+	 * TSQ gets cleared the subflow becomes eligible again.
+	 */
+	if (test_bit(TSQ_THROTTLED, &tp->tsq_flags))
+		return false;
 
-in_flight = tcp_packets_in_flight(tp);
-/* Not even a single spot in the cwnd */
-if (in_flight >= tp->snd_cwnd)
-return false;
+	in_flight = tcp_packets_in_flight(tp);
+	/* Not even a single spot in the cwnd */
+	if (in_flight >= tp->snd_cwnd)
+		return false;
 
-/* Now, check if what is queued in the subflow's send-queue
-* already fills the cwnd.
-*/
-space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
+	/* Now, check if what is queued in the subflow's send-queue
+	 * already fills the cwnd.
+	 */
+	space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
 
-if (tp->write_seq - tp->snd_nxt > space)
-return false;
+	if (tp->write_seq - tp->snd_nxt > space)
+		return false;
 
-if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
-return false;
+	if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
+		return false;
 
-mss_now = tcp_current_mss(sk);
+	mss_now = tcp_current_mss(sk);
 
-/* Don't send on this subflow if we bypass the allowed send-window at
-* the per-subflow level. Similar to tcp_snd_wnd_test, but manually
-* calculated end_seq (because here at this point end_seq is still at
-* the meta-level).
-*/
-if (skb && !zero_wnd_test &&
-after(tp->write_seq + min(skb->len, mss_now), tcp_wnd_end(tp)))
-return false;
+	/* Don't send on this subflow if we bypass the allowed send-window at
+	 * the per-subflow level. Similar to tcp_snd_wnd_test, but manually
+	 * calculated end_seq (because here at this point end_seq is still at
+	 * the meta-level).
+	 */
+	if (skb && !zero_wnd_test &&
+			after(tp->write_seq + min(skb->len, mss_now), tcp_wnd_end(tp)))
+		return false;
 
-return true;
+	return true;
 }
 
 /* Are we not allowed to reinject this skb on tp? */
@@ -107,8 +107,8 @@ static int mptcp_sched9010_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff
 	 * another one.
 	 */
 	return skb &&
-		/* Has the skb already been enqueued into this subsocket? */
-		mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
+			/* Has the skb already been enqueued into this subsocket? */
+			mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
 }
 
 /* We just look for any subflow that is available */
@@ -230,10 +230,10 @@ static struct sk_buff *__mptcp_sched9010_next_segment(struct sock *meta_sk, int 
 		skb = tcp_send_head(meta_sk);
 
 		if (!skb && meta_sk->sk_socket &&
-		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
-		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
+				test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
+				sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
 			struct sock *subsk = sched9010_get_available_subflow(meta_sk, NULL,
-								   false);
+					false);
 			if (!subsk)
 				return NULL;
 
@@ -246,68 +246,68 @@ static struct sk_buff *__mptcp_sched9010_next_segment(struct sock *meta_sk, int 
 }
 
 static struct sk_buff *mptcp_sched9010_next_segment(struct sock *meta_sk,
-		  int *reinject,
-		  struct sock **subsk,
-		  unsigned int *limit)
+		int *reinject,
+		struct sock **subsk,
+		unsigned int *limit)
 {
-struct sk_buff *skb = __mptcp_sched9010_next_segment(meta_sk, reinject);
-unsigned int mss_now;
-struct tcp_sock *subtp;
-u16 gso_max_segs;
-u32 max_len, max_segs, window, needed;
+	struct sk_buff *skb = __mptcp_sched9010_next_segment(meta_sk, reinject);
+	unsigned int mss_now;
+	struct tcp_sock *subtp;
+	u16 gso_max_segs;
+	u32 max_len, max_segs, window, needed;
 
-/* As we set it, we have to reset it as well. */
-*limit = 0;
+	/* As we set it, we have to reset it as well. */
+	*limit = 0;
 
-if (!skb)
-return NULL;
+	if (!skb)
+		return NULL;
 
-*subsk = sched9010_get_available_subflow(meta_sk, skb, false);
-if (!*subsk)
-return NULL;
+	*subsk = sched9010_get_available_subflow(meta_sk, skb, false);
+	if (!*subsk)
+		return NULL;
 
-subtp = tcp_sk(*subsk);
-mss_now = tcp_current_mss(*subsk);
+	subtp = tcp_sk(*subsk);
+	mss_now = tcp_current_mss(*subsk);
 
-if (!*reinject && unlikely(!tcp_snd_wnd_test(tcp_sk(meta_sk), skb, mss_now))) {
-skb = mptcp_sched9010_rcv_buf_optimization(*subsk, 1);
-if (skb)
-*reinject = -1;
-else
-return NULL;
-}
+	if (!*reinject && unlikely(!tcp_snd_wnd_test(tcp_sk(meta_sk), skb, mss_now))) {
+		skb = mptcp_sched9010_rcv_buf_optimization(*subsk, 1);
+		if (skb)
+			*reinject = -1;
+		else
+			return NULL;
+	}
 
-/* No splitting required, as we will only send one single segment */
-if (skb->len <= mss_now)
-return skb;
+	/* No splitting required, as we will only send one single segment */
+	if (skb->len <= mss_now)
+		return skb;
 
-/* The following is similar to tcp_mss_split_point, but
-* we do not care about nagle, because we will anyways
-* use TCP_NAGLE_PUSH, which overrides this.
-*
-* So, we first limit according to the cwnd/gso-size and then according
-* to the subflow's window.
-*/
+	/* The following is similar to tcp_mss_split_point, but
+	 * we do not care about nagle, because we will anyways
+	 * use TCP_NAGLE_PUSH, which overrides this.
+	 *
+	 * So, we first limit according to the cwnd/gso-size and then according
+	 * to the subflow's window.
+	 */
 
-gso_max_segs = (*subsk)->sk_gso_max_segs;
-if (!gso_max_segs) /* No gso supported on the subflow's NIC */
-gso_max_segs = 1;
-max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb), gso_max_segs);
-if (!max_segs)
-return NULL;
+	gso_max_segs = (*subsk)->sk_gso_max_segs;
+	if (!gso_max_segs) /* No gso supported on the subflow's NIC */
+		gso_max_segs = 1;
+	max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb), gso_max_segs);
+	if (!max_segs)
+		return NULL;
 
-max_len = mss_now * max_segs;
-window = tcp_wnd_end(subtp) - subtp->write_seq;
+	max_len = mss_now * max_segs;
+	window = tcp_wnd_end(subtp) - subtp->write_seq;
 
-needed = min(skb->len, window);
-if (max_len <= skb->len)
-/* Take max_win, which is actually the cwnd/gso-size */
-*limit = max_len;
-else
-/* Or, take the window */
-*limit = needed;
+	needed = min(skb->len, window);
+	if (max_len <= skb->len)
+		/* Take max_win, which is actually the cwnd/gso-size */
+		*limit = max_len;
+	else
+		/* Or, take the window */
+		*limit = needed;
 
-return skb;
+	return skb;
 }
 
 

@@ -18,10 +18,19 @@ static struct appchoice_priv *appchoice_get_priv(const struct tcp_sock *tp)
 }
 */
 
+/* Reinjections occure here - disable for 90/10 scheduler */
+static struct sk_buff *mptcp_appchoice_rcv_buf_optimization(struct sock *sk, int penal)
+{
+		return NULL;
+}
+
+
 /* If the sub-socket sk available to send the skb? */
-static bool mptcp_appchoice_is_available(struct sock *sk, struct sk_buff *skb)
+static bool mptcp_appchoice_is_available(struct sock *sk, struct sk_buff *skb,
+		bool zero_wnd_test)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	unsigned int mss_now, space, in_flight;
 
 	/* Set of states for which we are allowed to send data */
 	if (!mptcp_sk_can_send(sk))
@@ -54,23 +63,57 @@ static bool mptcp_appchoice_is_available(struct sock *sk, struct sk_buff *skb)
 	if (!tp->mptcp->fully_established) {
 		/* Make sure that we send in-order data */
 		if (skb && tp->mptcp->second_packet &&
-		    tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
+				tp->mptcp->last_end_data_seq != TCP_SKB_CB(skb)->seq)
 			return false;
 	}
+
+	/* If TSQ is already throttling us, do not send on this subflow. When
+	 * TSQ gets cleared the subflow becomes eligible again.
+	 */
+	if (test_bit(TSQ_THROTTLED, &tp->tsq_flags))
+		return false;
+
+	in_flight = tcp_packets_in_flight(tp);
+	/* Not even a single spot in the cwnd */
+	if (in_flight >= tp->snd_cwnd)
+		return false;
+
+	/* Now, check if what is queued in the subflow's send-queue
+	 * already fills the cwnd.
+	 */
+	space = (tp->snd_cwnd - in_flight) * tp->mss_cache;
+
+	if (tp->write_seq - tp->snd_nxt > space)
+		return false;
+
+	if (zero_wnd_test && !before(tp->write_seq, tcp_wnd_end(tp)))
+		return false;
+
+	mss_now = tcp_current_mss(sk);
+
+	/* Don't send on this subflow if we bypass the allowed send-window at
+	 * the per-subflow level. Similar to tcp_snd_wnd_test, but manually
+	 * calculated end_seq (because here at this point end_seq is still at
+	 * the meta-level).
+	 */
+	if (skb && !zero_wnd_test &&
+			after(tp->write_seq + min(skb->len, mss_now), tcp_wnd_end(tp)))
+		return false;
 
 	return true;
 }
 
 /* Are we not allowed to reinject this skb on tp? */
 static int mptcp_appchoice_dont_reinject_skb(struct tcp_sock *tp, struct sk_buff *skb)
-{
-	/* If the skb has already been enqueued in this sk, try to find
-	 * another one.
-	 */
-	return skb &&
-		/* Has the skb already been enqueued into this subsocket? */
-		mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
-}
+		{
+			/* If the skb has already been enqueued in this sk, try to find
+			 * another one.
+			 */
+			return skb &&
+					/* Has the skb already been enqueued into this subsocket? */
+					mptcp_pi_to_flag(tp->mptcp->path_index) & TCP_SKB_CB(skb)->path_mask;
+		}
+
 
 /* We just look for any subflow that is available */
 static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
@@ -84,9 +127,9 @@ static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
 
 	/* if there is only one subflow, bypass the scheduling function */
 	if (mpcb->cnt_subflows == 1) {
-		pr_info("MPTCP appchoice: There is only one subflow - no multipath-security possible \n");
+		pr_info("MPTCP Appchoice Scheduler: There is only one subflow - no multipath-security possible \n");
 		bestsk = (struct sock *)mpcb->connection_list;
-		if (!mptcp_appchoice_is_available(bestsk, skb))
+		if (!mptcp_appchoice_is_available(bestsk, skb, zero_wnd_test))
 			bestsk = NULL;
 		return bestsk;
 	}
@@ -96,7 +139,7 @@ static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
 			skb && mptcp_is_data_fin(skb)) {
 		mptcp_for_each_sk(mpcb, sk) {
 			if (tcp_sk(sk)->mptcp->path_index == mpcb->dfin_path_index &&
-					mptcp_appchoice_is_available(sk, skb))
+					mptcp_appchoice_is_available(sk, skb, zero_wnd_test))
 				return sk;
 		}
 	}
@@ -110,7 +153,7 @@ static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
 
 		if ((tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
 				tp->srtt < lowprio_min_time_to_peer) {
-			if (!mptcp_appchoice_is_available(sk, skb))
+			if (!mptcp_appchoice_is_available(sk, skb, zero_wnd_test))
 				continue;
 
 			if (mptcp_appchoice_dont_reinject_skb(tp, skb)) {
@@ -122,7 +165,7 @@ static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
 			lowpriosk = sk;
 		} else if (!(tp->mptcp->rcv_low_prio || tp->mptcp->low_prio) &&
 				tp->srtt < min_time_to_peer) {
-			if (!mptcp_appchoice_is_available(sk, skb))
+			if (!mptcp_appchoice_is_available(sk, skb, zero_wnd_test))
 				continue;
 
 			if (mptcp_appchoice_dont_reinject_skb(tp, skb)) {
@@ -174,47 +217,7 @@ static struct sock *appchoice_get_available_subflow(struct sock *meta_sk,
 /* Returns the next segment to be sent from the mptcp meta-queue.
  * Sets *@reinject to 0 if it is the regular send-head of the meta-sk
  */
-/* TODO unused? */
-//static struct sk_buff *__mptcp_appchoice_next_segment(struct sock *meta_sk, int *reinject)
-//{
-//	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
-//	struct sk_buff *skb = NULL;
-//
-//	*reinject = 0;
-//
-//	/* If we are in fallback-mode, just take from the meta-send-queue */
-//	if (mpcb->infinite_mapping_snd || mpcb->send_infinite_mapping)
-//		return tcp_send_head(meta_sk);
-//
-//	skb = skb_peek(&mpcb->reinject_queue);
-//
-//	if (skb) {
-//		*reinject = 1;
-//	} else {
-//		skb = tcp_send_head(meta_sk);
-//
-//		if (!skb && meta_sk->sk_socket &&
-//		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
-//		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
-//			struct sock *subsk = appchoice_get_available_subflow(meta_sk, NULL,
-//								   false);
-//			if (!subsk)
-//				return NULL;
-//		}
-//	}
-//	return skb;
-//}
-
-/* Reinjections occure here - disable for appchoice scheduler */
-static struct sk_buff *mptcp_rcv_buf_optimization(struct sock *sk, int penal)
-{
-		return NULL;
-}
-
-static struct sk_buff *mptcp_appchoice_next_segment(struct sock *meta_sk,
-		int *reinject,
-		struct sock **subsk,
-		unsigned int *limit)
+static struct sk_buff *__mptcp_appchoice_next_segment(struct sock *meta_sk, int *reinject)
 {
 	struct mptcp_cb *mpcb = tcp_sk(meta_sk)->mpcb;
 	struct sk_buff *skb = NULL;
@@ -233,18 +236,83 @@ static struct sk_buff *mptcp_appchoice_next_segment(struct sock *meta_sk,
 		skb = tcp_send_head(meta_sk);
 
 		if (!skb && meta_sk->sk_socket &&
-		    test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
-		    sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
+				test_bit(SOCK_NOSPACE, &meta_sk->sk_socket->flags) &&
+				sk_stream_wspace(meta_sk) < sk_stream_min_wspace(meta_sk)) {
 			struct sock *subsk = appchoice_get_available_subflow(meta_sk, NULL,
-								   false);
+					false);
 			if (!subsk)
 				return NULL;
 
-			skb = mptcp_rcv_buf_optimization(subsk, 0);
+			skb = mptcp_appchoice_rcv_buf_optimization(subsk, 0);
 			if (skb)
 				*reinject = -1;
 		}
 	}
+	return skb;
+}
+
+static struct sk_buff *mptcp_appchoice_next_segment(struct sock *meta_sk,
+		int *reinject,
+		struct sock **subsk,
+		unsigned int *limit)
+{
+	struct sk_buff *skb = __mptcp_appchoice_next_segment(meta_sk, reinject);
+	unsigned int mss_now;
+	struct tcp_sock *subtp;
+	u16 gso_max_segs;
+	u32 max_len, max_segs, window, needed;
+
+	/* As we set it, we have to reset it as well. */
+	*limit = 0;
+
+	if (!skb)
+		return NULL;
+
+	*subsk = appchoice_get_available_subflow(meta_sk, skb, false);
+	if (!*subsk)
+		return NULL;
+
+	subtp = tcp_sk(*subsk);
+	mss_now = tcp_current_mss(*subsk);
+
+	if (!*reinject && unlikely(!tcp_snd_wnd_test(tcp_sk(meta_sk), skb, mss_now))) {
+		skb = mptcp_appchoice_rcv_buf_optimization(*subsk, 1);
+		if (skb)
+			*reinject = -1;
+		else
+			return NULL;
+	}
+
+	/* No splitting required, as we will only send one single segment */
+	if (skb->len <= mss_now)
+		return skb;
+
+	/* The following is similar to tcp_mss_split_point, but
+	 * we do not care about nagle, because we will anyways
+	 * use TCP_NAGLE_PUSH, which overrides this.
+	 *
+	 * So, we first limit according to the cwnd/gso-size and then according
+	 * to the subflow's window.
+	 */
+
+	gso_max_segs = (*subsk)->sk_gso_max_segs;
+	if (!gso_max_segs) /* No gso supported on the subflow's NIC */
+		gso_max_segs = 1;
+	max_segs = min_t(unsigned int, tcp_cwnd_test(subtp, skb), gso_max_segs);
+	if (!max_segs)
+		return NULL;
+
+	max_len = mss_now * max_segs;
+	window = tcp_wnd_end(subtp) - subtp->write_seq;
+
+	needed = min(skb->len, window);
+	if (max_len <= skb->len)
+		/* Take max_win, which is actually the cwnd/gso-size */
+		*limit = max_len;
+	else
+		/* Or, take the window */
+		*limit = needed;
+
 	return skb;
 }
 
