@@ -1,0 +1,5 @@
+#!/bin/bash
+make clean
+make make-kpkg clean
+make menuconfig
+fakeroot make-kpkg --initrd --revision=1.0.custom kernel_image -j5
