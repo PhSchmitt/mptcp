@@ -117,6 +117,7 @@
 #include <linux/static_key.h>
 #include <linux/memcontrol.h>
 #include <linux/prefetch.h>
+#include <net/sock.h>
 
 #include <asm/uaccess.h>
 
@@ -661,7 +662,7 @@ static inline void sock_valbool_flag(struct sock *sk, int bit, int valbool)
  *	This is meant for all protocols to use and covers goings on
  *	at the socket level. Everything here is generic.
  */
-
+int isImportantdata = 0;
 int sock_setsockopt(struct socket *sock, int level, int optname,
 		    char __user *optval, unsigned int optlen)
 {
@@ -670,6 +671,7 @@ int sock_setsockopt(struct socket *sock, int level, int optname,
 	int valbool;
 	struct linger ling;
 	int ret = 0;
+	isImportantdata = 0;
 
 	/*
 	 *	Options without arguments
@@ -778,6 +780,18 @@ set_rcvbuf:
 		break;
 
 	case SO_OOBINLINE:
+	    pr_info("MPTCP Appchoice Scheduler: Urgent option found \n");
+		if (valbool)
+		{
+			pr_info("MPTCP Appchoice Scheduler: Urgent option enabled \n");
+			isImportantdata = 1;
+		}
+		else
+		{
+			pr_info("MPTCP Appchoice Scheduler:Urgent option disabled \n");
+			isImportantdata = 0;
+		}
+
 		sock_valbool_flag(sk, SOCK_URGINLINE, valbool);
 		break;
 
